@@ -1,0 +1,380 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PayFlow Dashboard</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont,
+            "Segoe UI", sans-serif;
+            background: #f5f6fa;
+            color: #202938;
+        }
+
+        header {
+            background: #17243b;
+            color: white;
+            padding: 22px 40px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        header p {
+            margin: 5px 0 0;
+            color: #aebbd0;
+            font-size: 13px;
+        }
+
+        main {
+            max-width: 850px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 28px;
+            margin-bottom: 24px;
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 19px;
+        }
+
+        label {
+            display: block;
+            margin: 18px 0 7px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 7px;
+            font-size: 15px;
+        }
+
+        button {
+            width: 100%;
+            margin-top: 24px;
+            padding: 14px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+
+        .result {
+            display: none;
+            margin-top: 20px;
+            padding: 16px;
+            border-radius: 8px;
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+        }
+
+        .error {
+            background: #fef2f2;
+            border-color: #fecaca;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-size: 13px;
+        }
+
+        .status {
+            color: #15803d;
+            font-weight: 600;
+        }
+
+        .error .status {
+            color: #b91c1c;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            font-size: 13px;
+        }
+    </style>
+</head>
+
+<body>
+
+<header>
+    <h1>PayFlow</h1>
+    <p>Payment Management Dashboard</p>
+</header>
+
+<main>
+
+    <div class="card">
+        <h2>Create Payment Order</h2>
+        <p class="subtitle">
+            Submit a new payment order to the PayFlow API.
+        </p>
+
+        <form id="paymentForm">
+
+            <label for="customerId">Customer ID</label>
+            <input
+                    id="customerId"
+                    type="text"
+                    placeholder="CUST-001"
+                    required
+            >
+
+            <label for="amount">Amount</label>
+            <input
+                    id="amount"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="100.00"
+                    required
+            >
+
+            <label for="currency">Currency</label>
+            <select id="currency">
+                <option value="EUR">EUR</option>
+                <option value="USD">USD</option>
+                <option value="GBP">GBP</option>
+            </select>
+
+            <button id="submitButton" type="submit">
+                Create Payment Order
+            </button>
+
+        </form>
+
+        <div id="result" class="result">
+            <div id="status" class="status"></div>
+            <pre id="response"></pre>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Payment Orders</h2>
+
+        <p class="subtitle">
+            All payment orders stored in PostgreSQL.
+        </p>
+
+        <button type="button" onclick="loadOrders()">
+            Refresh Orders
+        </button>
+
+        <div style="overflow-x: auto; margin-top: 20px;">
+            <table style="width:100%; border-collapse:collapse;
+                      text-align:left; font-size:14px;">
+                <thead>
+                <tr style="background:#f5f6fa;">
+                    <th style="padding:12px;">Order ID</th>
+                    <th style="padding:12px;">Customer</th>
+                    <th style="padding:12px;">Amount</th>
+                    <th style="padding:12px;">Status</th>
+                </tr>
+                </thead>
+
+                <tbody id="ordersTable">
+                <tr>
+                    <td colspan="4" style="padding:15px;">
+                        Loading orders...
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</main>
+
+<script>
+
+    const form = document.getElementById("paymentForm");
+    const button = document.getElementById("submitButton");
+    const result = document.getElementById("result");
+
+    // Reused if the user retries after an error, so a retry cannot create a
+    // second payment. Replaced with a new key after each successful order.
+    let idempotencyKey = crypto.randomUUID();
+
+    form.addEventListener("submit", async function(event) {
+
+        event.preventDefault();
+
+        button.disabled = true;
+        button.textContent = "Processing...";
+
+        result.style.display = "none";
+
+        const paymentRequest = {
+            customerId: document.getElementById("customerId").value,
+            amount: Number(document.getElementById("amount").value),
+            currency: document.getElementById("currency").value
+        };
+
+        try {
+
+            const response = await fetch(
+                "/api/payment-orders",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": idempotencyKey
+                    },
+                    body: JSON.stringify(paymentRequest)
+                }
+            );
+
+            const data = await response.json();
+
+            result.style.display = "block";
+
+            if (response.ok) {
+
+                result.classList.remove("error");
+                idempotencyKey = crypto.randomUUID();
+
+                document.getElementById("status").textContent =
+                    "Payment order created successfully!";
+
+                document.getElementById("response").textContent =
+                    JSON.stringify(data, null, 2);
+
+                await loadOrders();
+
+            } else {
+
+                result.classList.add("error");
+
+                document.getElementById("status").textContent =
+                    "Request failed: HTTP " + response.status;
+
+                document.getElementById("response").textContent =
+                    JSON.stringify(data, null, 2);
+            }
+
+        } catch (error) {
+
+            result.style.display = "block";
+            result.classList.add("error");
+
+            document.getElementById("status").textContent =
+                "Could not connect to PayFlow.";
+
+            document.getElementById("response").textContent =
+                error.message;
+
+        } finally {
+
+            button.disabled = false;
+            button.textContent = "Create Payment Order";
+
+        }
+
+    });
+
+    async function loadOrders() {
+
+        const table = document.getElementById("ordersTable");
+
+        table.textContent = "Loading orders...";
+
+        try {
+
+            const response = await fetch("/api/payment-orders");
+
+            if (!response.ok) {
+                throw new Error("Could not retrieve payment orders");
+            }
+
+            const orders = (await response.json()).content;
+
+            table.replaceChildren();
+
+            if (orders.length === 0) {
+                const row = document.createElement("tr");
+                const cell = document.createElement("td");
+
+                cell.colSpan = 4;
+                cell.textContent = "No payment orders yet.";
+                cell.style.padding = "15px";
+
+                row.appendChild(cell);
+                table.appendChild(row);
+                return;
+            }
+
+            orders.forEach(order => {
+
+                const row = document.createElement("tr");
+
+                const values = [
+                    order.orderId,
+                    order.customerId,
+                    `${order.amount} ${order.currency}`,
+                    order.status
+                ];
+
+                values.forEach(value => {
+
+                    const cell = document.createElement("td");
+
+                    cell.textContent = value;
+                    cell.style.padding = "12px";
+                    cell.style.borderBottom = "1px solid #eee";
+
+                    row.appendChild(cell);
+
+                });
+
+                table.appendChild(row);
+
+            });
+
+        } catch (error) {
+
+            table.textContent = "Error loading orders: " + error.message;
+
+        }
+    }
+
+    // Load existing orders when the dashboard opens
+    loadOrders();
+
+
+</script>
+
+</body>
+</html>
